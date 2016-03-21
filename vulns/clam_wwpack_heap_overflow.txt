@@ -1,0 +1,119 @@
+===========================================
+ClamAV 'WWPack' Heap Overflow Vulnerability
+===========================================
+
+SUMMARY
+=======
+
+A heap buffer overflow exists in the processing of PE (Portable Executable)
+files of Clam Anti-virus. 
+
+The vulnerability can be exploited via a specially crafted PE packed with the
+WWPack compressor. Successful exploitation allows execution of arbitrary code.
+
+Versions 0.97.6 and previous are affected.
+
+TECHNICAL DETAILS
+=================
+
+In order to scan a PE file the cli_scanpe function (libclamav/pe.c) parses the
+PE headers, performs multiple bound checkings and saves some values for later
+use. Especially, the VirtualAddress and VirtualSize fields of each section
+header are stored in a internal structure called 'exe_section'.
+
+--- snip ---
+for(i = 0; i < nsections; i++) {
+    ...
+    exe_sections[i].rva = section_hdr[i].VirtualAddress;
+    exe_sections[i].vsz = section_hdr[i].VirtualSize;
+    ...
+}
+--- snip ---
+
+The problem is that, by default, the VirtualAddress value is not sanitized,
+and some virtual regions may overlap, which later results in an exploitable
+condition.
+
+If WWPack magic bytes are found in the file after parsing the PE headers,
+cli_scanpe function allocate 'src' buffer where the PE headers are copied. The
+content of each section except the last one (packer) is also copied into the
+buffer, but starting at 'rva' position.
+
+--- snip ---
+src = cli_calloc(ssize, sizeof(char));
+...
+
+fmap_readn(map, src, 0, head);
+...
+
+for(i = 0; i < nsections-1; i++) {
+    ...
+    fmap_readn(map,
+               src + exe_sections[i].rva,
+               exe_sections[i].raw,
+               exe_sections[i].rsz);
+    ...
+}
+--- snip ---
+
+Then a temporary file is created and the 'src' buffer is passed as a parameter
+to the decompression function wwunpack (libclamav/wwunpack.c). The last part
+of this function contains the vulnerable code:
+
+--- snip ---
+structs = &src[(0xffff & cli_readint32(&src[0xC8+0x14]))+0xC8+0x18];
+for(i = 0; i < nsections-1; i++) {
+    cli_writeint32(structs+8, sects[i].vsz);
+    cli_writeint32(structs+12, sects[i].rva);
+    cli_writeint32(structs+16, sects[i].vsz);
+    cli_writeint32(structs+20, sects[i].rva);
+    structs+=0x28;
+}
+memset(structs, 0, 0x28);
+--- snip ---
+
+This snippet reads the field SizeOfOptionalHeader (offset 0xC8+0x14) from
+'src' buffer to calculate the position of the section header table. For each
+section, it sets the corresponding values of VirtualSize, VirtualAddress,
+SizeOfRawData and PointerToRawData in the buffer using the 'vsz' and 'rva'
+values of 'exe_section'.
+
+It is vulnerable because an attacker can overwrite the original value of
+SizeOfOptionalHeader with an arbitrary value and write outside the bounds of
+'src' buffer. The values 'vsz' and 'rva' are all under attacker's control, but
+with certain restrictions.
+
+PROOF-OF-CONCEPT
+================
+
+To demonstrate this vulnerability a crafted file is included. It is the test
+file distributed with ClamAV (test/clam-wwpack.exe) with the following
+modifications:
+
+- Subsystem in IMAGE_OPTIONAL_HEADER is set to 1 (NATIVE) to allow one-byte alignment.
+- SectionAlignment in IMAGE_OPTIONAL_HEADER is set to 1.
+- FileAlignment in IMAGE_OPTIONAL_HEADER is set to 1.
+- VirtuaAddress in IMAGE_SECTION_HEADER of section .rdata is set to 0.
+- At offset 0xC8 + 0x14 in .rdata section, the new value (0x5000 - 0xC8 - 0x18) for
+  SizeOfOptionalHeader.
+- Remaining bytes of .rdata are sets to 'A'.
+
+Schematically, the heap will be overwritten like the next schema:
+
+   0         0x5000
+...+---------+.........+-----+-----+-----+-----+-.........+.........+-----+--
+   | src buf | 8 bytes | vsz | rva | vsz | rva | 16 bytes | 8 bytes | vsz | ...
+...+---------+.........+-----+-----+-----+-----+..........+.........+-----+--
+
+WORKAROUND
+==========
+
+Setting the option 'DETECT_BROKEN' would prevent processing misplaced or
+overlapped PE sections.
+
+If using clamscan, this can be done by running clamscan with '--detect-broken'
+option. If using clamdscan, set the 'DetectBrokenExecutables' option in the
+clamd.conf file to 'yes'. 
+
+Also disabling the scanning of PE files will prevent exploitation.
+

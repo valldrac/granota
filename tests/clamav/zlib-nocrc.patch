@@ -1,0 +1,37 @@
+--- zlib-1.2.8/inflate.c.orig	2012-08-13 09:02:40.000000000 +0200
++++ zlib-1.2.8/inflate.c	2016-03-18 17:06:59.000000000 +0100
+@@ -796,11 +796,6 @@
+         case HCRC:
+             if (state->flags & 0x0200) {
+                 NEEDBITS(16);
+-                if (hold != (state->check & 0xffff)) {
+-                    strm->msg = (char *)"header crc mismatch";
+-                    state->mode = BAD;
+-                    break;
+-                }
+                 INITBITS();
+             }
+             if (state->head != Z_NULL) {
+@@ -1181,15 +1176,6 @@
+                     strm->adler = state->check =
+                         UPDATE(state->check, put - out, out);
+                 out = left;
+-                if ((
+-#ifdef GUNZIP
+-                     state->flags ? hold :
+-#endif
+-                     ZSWAP32(hold)) != state->check) {
+-                    strm->msg = (char *)"incorrect data check";
+-                    state->mode = BAD;
+-                    break;
+-                }
+                 INITBITS();
+                 Tracev((stderr, "inflate:   check matches trailer\n"));
+             }
+@@ -1307,8 +1293,6 @@
+     if (state->mode == DICT) {
+         dictid = adler32(0L, Z_NULL, 0);
+         dictid = adler32(dictid, dictionary, dictLength);
+-        if (dictid != state->check)
+-            return Z_DATA_ERROR;
+     }

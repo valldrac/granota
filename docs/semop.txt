@@ -1,0 +1,54 @@
+
+Synchronization with Semaphores
+===============================
+
+Version 0.24
+============
+
+child {
+  loop:
+    wait_child_undo & test_target
+    post_child_undo & wait_tracer
+    /*
+     * process the input file
+     */
+    goto loop
+}
+
+tracer {
+    init_child
+    fork
+    test_child
+    collect_trace
+  loop:
+    wait_input & post_tracer
+    test_child_timeout
+    collect_trace
+    post_result
+    if failed:
+      reset_tracer
+    goto loop
+}
+
+fuzzer {
+  loop:
+    post_input
+    wait_result
+}
+
+child tracer target
+-------------------
+  0     0     0
+  1     0     1     child   test_target & post_child & post_target
+  0     0     1     tracer  wait_child
+                            collect_trace
+  0     1     1             wait_input & post_tracer
+  0     0     1     child   wait_tracer
+                            open_input
+                            ...
+                            close_input
+  0     0     0     child   wait_target
+  1     0     1             test_target & post_child & post_target
+  0     0     1     tracer  wait_child
+                            collect_trace
+                            post_result

@@ -1,0 +1,75 @@
+#!/bin/bash
+#
+# crashdbg [pid] [inputfile]
+#
+# Exit codes:
+#   0 - ALREADY_SEEN
+#   1 - EXPLOITABLE
+#   2 - PROBABLY_EXPLOITABLE
+#   3 - PROBABLY_NOT_EXPLOITABLE
+#   4 - UNKNOWN
+#  >4 - UNKNOWN_ERROR
+
+trap 'exit 5' ERR INT TERM
+set -o pipefail
+
+min() {
+	local S1=$(stat -c%s "$1")
+	local S2=$(stat -c%s "$2")
+	if [ $S1 -eq $S2 ]; then
+		S1=$(gzip -c "$1" | wc -c)
+		S2=$(gzip -c "$2" | wc -c)
+	fi
+	[ $S1 -lt $S2 ]
+}
+
+test -n "$1"
+test -n "$2"
+
+PID=$1
+INPUT=$2
+LOG=$(mktemp)
+
+prefix=@prefix@
+exec_prefix=@exec_prefix@
+pkglibexecdir=@libexecdir@/@PACKAGE@
+
+gdb -pid "$PID" -batch \
+  -ex "source $pkglibexecdir/exploitable/exploitable.py" \
+  -ex "sig 0" \
+  -ex "sig 0" \
+  -ex "exploitable -v" \
+  &> "$LOG"
+
+TITLE=$(awk '/^Title/ {print $2}' "$LOG")
+TITLE=${TITLE:-Untitled}
+
+SAVELOG="$TITLE.log"
+SAVEIN="$TITLE.in"
+
+if [ -f "$SAVEIN" ]; then
+	CLASS=ALREADY_SEEN
+else
+	CLASS=$(awk '/^Exploitability/ {print $3}' "$LOG")
+fi
+
+if [ "$CLASS" != "ALREADY_SEEN" ] || min "$INPUT" "$SAVEIN"; then
+	cp -f "$INPUT" "$SAVEIN"
+	mv -f "$LOG" "$SAVELOG"
+else
+	rm -f "$LOG"
+fi
+
+case "$CLASS" in
+  ALREADY_SEEN)
+    exit 0 ;;
+  EXPLOITABLE)
+    exit 1 ;;
+  PROBABLY_EXPLOITABLE)
+    exit 2 ;;
+  PROBABLY_NOT_EXPLOITABLE)
+    exit 3 ;;
+  UNKNOWN)
+    exit 4 ;;
+esac
+exit 5
